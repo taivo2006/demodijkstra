@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<title>Dijkstra Interactive Demo (Advanced)</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align:center; padding:16px; }
+  #controls { margin-bottom: 10px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  button { padding:8px 12px; font-size:14px; cursor:pointer; }
+  #grid { display:grid; gap:2px; margin:12px auto; }
+  .cell { width:36px; height:36px; border:1px solid #ddd; box-sizing:border-box; cursor:pointer; transition:background .12s; }
+  .start { background:#0a7a07 !important; }
+  .end { background:#c91f1f !important; }
+  .wall { background:#111 !important; cursor:crosshair; }
+  .visited { background:#8fd3ff !important; }
+  .path { background:#ffd84d !important; }
+  #info { margin-top:8px; }
+  label { user-select:none; }
+  .small { font-size:13px; color:#444; }
+</style>
+</head>
+<body>
+  <h2>Demo Dijkstra — Interactive</h2>
+
+  <div id="controls">
+    <button id="btnSetStart">Đặt Start</button>
+    <button id="btnSetEnd">Đặt End (Reset trạng thái)</button>
+    <button id="btnToggleDraw">Chế độ Vẽ Tường: ON</button>
+    <button id="btnFind">Tìm đường</button>
+    <button id="btnResetAll">Reset toàn bộ</button>
+
+    <label class="small"><input type="checkbox" id="autoRun" /> Auto-run khi thay đổi</label>
+    <label class="small">Animation tốc độ:
+      <select id="speed">
+        <option value="40">Nhanh</option>
+        <option value="120" selected>Trung bình</option>
+        <option value="300">Chậm</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="grid"></div>
+
+  <div id="info">
+    <span id="result">—</span>
+    <div class="small">Hướng dẫn: Click ô để vẽ/xóa tường (khi chế độ Vẽ ON). Bấm "Đặt Start" hoặc "Đặt End" rồi click ô muốn đặt.</div>
+  </div>
+
+<script>
+/* Config */
+const ROWS = 10, COLS = 10;
+const gridEl = document.getElementById('grid');
+gridEl.style.gridTemplateColumns = `repeat(${COLS}, 36px)`;
+gridEl.style.gridTemplateRows = `repeat(${ROWS}, 36px)`;
+
+/* State */
+let nodes = [];
+let drawMode = true;    // click toggles wall when true
+let placing = null;     // "start" | "end" | null
+let autoRun = document.getElementById('autoRun');
+let animSpeedSelect = document.getElementById('speed');
+
+/* default positions */
+let startPos = {r:0, c:0};
+let endPos = {r:9, c:9};
+
+/* create grid */
+for(let r=0;r<ROWS;r++){
+  nodes[r] = [];
+  for(let c=0;c<COLS;c++){
+    const el = document.createElement('div');
+    el.className = 'cell';
+    gridEl.appendChild(el);
+
+    const node = {
+      r, c, el,
+      wall:false, visited:false, dist:Infinity, prev:null
+    };
+    nodes[r][c] = node;
+
+    el.addEventListener('click', async (ev) => {
+      // If currently in placing mode set start/end
+      if(placing === 'start'){
+        // clear previous start
+        const prev = nodes[startPos.r][startPos.c];
+        prev.el.classList.remove('start');
+        startPos = {r,c};
+        node.el.classList.add('start');
+        placing = null;
+        document.getElementById('btnSetStart').innerText = 'Đặt Start';
+        if(autoRun.checked) await findAndAnimate();
+        return;
+      }
+      if(placing === 'end'){
+        // reset state as requested when press End button
+        resetSearchState();
+        const prev = nodes[endPos.r][endPos.c];
+        prev.el.classList.remove('end');
+        endPos = {r,c};
+        node.el.classList.add('end');
+        placing = null;
+        document.getElementById('btnSetEnd').innerText = 'Đặt End (Reset trạng thái)';
+        if(autoRun.checked) await findAndAnimate();
+        return;
+      }
+
+      // otherwise handle draw mode (toggle wall)
+      if(drawMode){
+        // cannot turn start/end into wall
+        if((r===startPos.r && c===startPos.c) || (r===endPos.r && c===endPos.c)) return;
+        node.wall = !node.wall;
+        node.el.classList.toggle('wall', node.wall);
+        if(autoRun.checked) findAndAnimate(); // run but don't await to keep UI responsive
+      }
+    });
+  }
+}
+
+/* mark start / end visually */
+nodes[startPos.r][startPos.c].el.classList.add('start');
+nodes[endPos.r][endPos.c].el.classList.add('end');
+
+/* helpers */
+function resetSearchState(){
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      nodes[r][c].visited = false;
+      nodes[r][c].dist = Infinity;
+      nodes[r][c].prev = null;
+      nodes[r][c].el.classList.remove('visited','path');
+    }
+  }
+  document.getElementById('result').innerText = '—';
+}
+
+/* full reset */
+function resetAll(){
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const n = nodes[r][c];
+      n.wall = false;
+      n.visited = false;
+      n.dist = Infinity;
+      n.prev = null;
+      n.el.className = 'cell';
+    }
+  }
+  // reset start/end to defaults
+  startPos = {r:0,c:0};
+  endPos = {r:ROWS-1,c:COLS-1};
+  nodes[startPos.r][startPos.c].el.classList.add('start');
+  nodes[endPos.r][endPos.c].el.classList.add('end');
+  document.getElementById('result').innerText = '—';
+}
+
+/* neighbors 4-dir */
+function neighbors(r,c){
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  const res = [];
+  for(const d of dirs){
+    const nr = r + d[0], nc = c + d[1];
+    if(nr>=0 && nr<ROWS && nc>=0 && nc<COLS){
+      const nb = nodes[nr][nc];
+      if(!nb.wall) res.push(nb);
+    }
+  }
+  return res;
+}
+
+/* Simple PQ using array sort (sufficient for small grid) */
+function dijkstraCompute(){
+  // initialize
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      nodes[r][c].dist = Infinity;
+      nodes[r][c].prev = null;
+      nodes[r][c].visited = false;
+    }
+  }
+  const startNode = nodes[startPos.r][startPos.c];
+  startNode.dist = 0;
+  const pq = [ startNode ];
+
+  const visitedOrder = []; // for animation
+  while(pq.length){
+    pq.sort((a,b)=>a.dist - b.dist);
+    const u = pq.shift();
+    if(u.visited) continue;
+    u.visited = true;
+    visitedOrder.push(u);
+    if(u.r === endPos.r && u.c === endPos.c) break;
+    const nbs = neighbors(u.r, u.c);
+    for(const v of nbs){
+      if(u.dist + 1 < v.dist){
+        v.dist = u.dist + 1;
+        v.prev = u;
+        pq.push(v);
+      }
+    }
+  }
+
+  // build path (may be empty)
+  const endNode = nodes[endPos.r][endPos.c];
+  const path = [];
+  if(endNode.dist !== Infinity){
+    let cur = endNode;
+    while(cur){
+      path.push(cur);
+      cur = cur.prev;
+    }
+    path.reverse();
+  }
+  return { visitedOrder, path };
+}
+
+/* animate the visited order and then path */
+function sleep(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
+async function findAndAnimate(){
+  // prepare: clear previous visited/path classes
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      nodes[r][c].el.classList.remove('visited','path');
+    }
+  }
+  document.getElementById('result').innerText = 'Đang tìm...';
+  const speed = parseInt(animSpeedSelect.value,10);
+
+  // compute but also get visited order
+  const { visitedOrder, path } = dijkstraCompute();
+
+  // animate visited nodes
+  for(const n of visitedOrder){
+    // skip start & end style changes (keep start/end colors)
+    if(!(n.r === startPos.r && n.c === startPos.c) && !(n.r === endPos.r && n.c === endPos.c)){
+      n.el.classList.add('visited');
+    }
+    await sleep(speed);
+  }
+
+  // if no path
+  if(path.length === 0){
+    document.getElementById('result').innerText = 'Không tìm được đường!';
+    return;
+  }
+
+  // animate path
+  for(const p of path){
+    if(!(p.r === startPos.r && p.c === startPos.c) && !(p.r === endPos.r && p.c === endPos.c)){
+      p.el.classList.remove('visited');
+      p.el.classList.add('path');
+    }
+    await sleep(Math.max(30, speed/2));
+  }
+
+  document.getElementById('result').innerText = `Đường ngắn nhất: ${path.length-1} bước`;
+}
+
+/* Controls */
+document.getElementById('btnToggleDraw').addEventListener('click', () => {
+  drawMode = !drawMode;
+  document.getElementById('btnToggleDraw').innerText = 'Chế độ Vẽ Tường: ' + (drawMode ? 'ON' : 'OFF');
+});
+document.getElementById('btnSetStart').addEventListener('click', () => {
+  placing = (placing === 'start') ? null : 'start';
+  document.getElementById('btnSetStart').innerText = (placing === 'start') ? 'Bấm ô để đặt Start (Nhấn lại hủy)' : 'Đặt Start';
+  // turn off other placing
+  if(placing) { document.getElementById('btnSetEnd').innerText = 'Đặt End (Reset trạng thái)'; }
+});
+document.getElementById('btnSetEnd').addEventListener('click', () => {
+  // pressing End triggers reset of search state (the request)
+  resetSearchState();
+  placing = (placing === 'end') ? null : 'end';
+  document.getElementById('btnSetEnd').innerText = (placing === 'end') ? 'Bấm ô để đặt End (Nhấn lại hủy)' : 'Đặt End (Reset trạng thái)';
+});
+document.getElementById('btnResetAll').addEventListener('click', () => {
+  resetAll();
+});
+document.getElementById('btnFind').addEventListener('click', () => {
+  findAndAnimate();
+});
+
+/* visual safety: set start and end classes after resetAll etc */
+function refreshMarkers(){
+  // remove any previous marks
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    const n = nodes[r][c];
+    // ensure start/end/wall/visited/path classes are correct
+    n.el.classList.toggle('wall', n.wall);
+    n.el.classList.remove('start','end');
+  }
+  nodes[startPos.r][startPos.c].el.classList.add('start');
+  nodes[endPos.r][endPos.c].el.classList.add('end');
+}
+
+/* ensure markers correct after resetAll */
+const origResetAll = resetAll;
+resetAll = function(){
+  origResetAll();
+  refreshMarkers();
+};
+
+/* initial markers */
+refreshMarkers();
+
+</script>
+</body>
+</html>
